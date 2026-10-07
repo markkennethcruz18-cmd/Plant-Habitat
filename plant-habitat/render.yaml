@@ -1,0 +1,22 @@
+# One-click setup for Render.com (Blueprint). Needs the Starter plan because orders are saved on a persistent disk.
+services:
+  - type: web
+    name: plant-habitat
+    runtime: node
+    plan: starter
+    buildCommand: echo "nothing to build"
+    startCommand: node server.js
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TRUST_PROXY
+        value: "1"
+      - key: DATA_DIR
+        value: /data
+      - key: ADMIN_PASSWORD
+        generateValue: true   # Render creates a strong password; read it in Dashboard > Environment
+    disk:
+      name: plant-habitat-data
+      mountPath: /data
+      sizeGB: 1

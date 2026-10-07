@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="robots" content="noindex, nofollow">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Orders | Plant Habitat admin</title>
+<style>
+:root{--g:#0f3d2e;--bg:#f2f6ee;--line:#dbe4d6;--mut:#4d6157}
+*{box-sizing:border-box}
+body{font:16px/1.5 system-ui,sans-serif;margin:0;background:var(--bg);color:#10241b}
+main{max-width:900px;margin:0 auto;padding:16px}
+h1{color:var(--g);margin:0}
+.top{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px}
+select,input,button{font:inherit;padding:10px 12px;border-radius:8px;border:1px solid #9db3a5}
+button{background:var(--g);color:#fff;cursor:pointer;border-color:var(--g)}
+button.ghost{background:#fff;color:var(--g)}
+button:disabled{opacity:.6}
+small,.mut{color:var(--mut)}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin:12px 0}
+.tabs button{background:#fff;color:var(--g)}
+.tabs button[aria-pressed=true]{background:var(--g);color:#fff}
+.o{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px;margin:12px 0}
+.o.new{border:2px solid #c8a400;background:#fffdf0}
+.h{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center}
+.badge{display:inline-block;padding:2px 10px;border-radius:99px;background:#e6efe1;color:var(--g);font-size:14px;font-weight:600}
+.badge.r{background:#c8a400;color:#fff}
+.badge.x{background:#eee;color:#666}
+.o p{margin:8px 0}
+.login{max-width:360px;margin:60px auto;background:#fff;border:1px solid var(--line);border-radius:12px;padding:20px}
+.login input{width:100%;margin:10px 0}
+.login button{width:100%}
+.err{color:#b00020;min-height:1.4em}
+.pr{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 0;border-top:1px solid var(--line)}
+.pr .nm{flex:1 1 140px;font-weight:600}
+.pr label{display:flex;align-items:center;gap:6px;font-size:14px;color:var(--mut)}
+.pr input{width:110px}
+.badge.o{background:#fde2e2;color:#9b1c1c}
+.warn{background:#fff3cd;border:1px solid #e0c56a;border-radius:8px;padding:10px 12px;margin:10px 0}
+</style></head><body><main>
+<div class="top"><h1>🌿 Plant Habitat orders</h1><div id="tools"></div></div>
+<div id="app"></div>
+</main>
+<script>
+var T=sessionStorage.getItem('t'),A=document.getElementById('app'),TL=document.getElementById('tools');
+var ALL=['Received','Confirmed','Preparing','Shipped','Out for delivery','Delivered','Ready for pick-up','Completed','Cancelled'];
+var DONE=['Delivered','Completed','Cancelled'];
+var orders=[],prods=[],inq=[],seenQ=null,tab='new',seen=null,baseTitle=document.title,ac=null;
+
+function e(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function money(n){return '₱'+Number(n||0).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2})}
+
+function api(p,o){
+  o=o||{};o.headers={'Content-Type':'application/json',Authorization:'Bearer '+T};
+  return fetch(p,o).then(function(r){
+    if(r.status===401){T=null;sessionStorage.removeItem('t');login('Please log in again.');throw 0}
+    return r.json();
+  });
+}
+
+function beep(){
+  try{
+    ac=ac||new (window.AudioContext||window.webkitAudioContext)();
+    var o=ac.createOscillator(),g=ac.createGain();o.connect(g);g.connect(ac.destination);
+    o.frequency.value=880;g.gain.value=.15;o.start();o.stop(ac.currentTime+.25);
+  }catch(x){}
+}
+
+function login(msg){
+  TL.innerHTML='';
+  var warn=location.protocol==='file:'?'<div class="warn"><b>Open this page through the server.</b> Run <code>node server.js</code>, then go to <b>http://localhost:3000/admin</b>. Opening the file directly cannot work.</div>':'';
+  A.innerHTML=warn+'<div class="login"><h2 style="margin:0 0 4px">Admin login</h2><input id="pw" type="password" placeholder="Admin password" autocomplete="current-password" autofocus><button id="go">Log in</button><p class="err" id="er">'+e(msg||'')+'</p></div>';
+  var pw=document.getElementById('pw'),go=document.getElementById('go'),er=document.getElementById('er');
+  function submit(){
+    go.disabled=true;er.textContent='';
+    fetch('/api/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw.value})})
+      .then(function(r){return r.json()})
+      .then(function(d){
+        go.disabled=false;
+        if(d.token){T=d.token;sessionStorage.setItem('t',T);seen=null;seenQ=null;beep();load()}
+        else er.textContent=d.error||'Wrong password';
+      },function(){go.disabled=false;er.textContent='Cannot reach the server. Is "node server.js" running?'});
+  }
+  go.onclick=submit;
+  pw.onkeydown=function(ev){if(ev.key==='Enter')submit()};
+  pw.focus();
+}
+
+function logout(){T=null;sessionStorage.removeItem('t');orders=[];document.title=baseTitle;login()}
+
+function isNew(o){return o.status==='Received'}
+function inTab(o){
+  if(tab==='new')return isNew(o);
+  if(tab==='active')return !isNew(o)&&DONE.indexOf(o.status)<0;
+  if(tab==='done')return DONE.indexOf(o.status)>=0;
+  return true;
+}
+
+function card(o){
+  var a=o.address;
+  var addr=a?'Ship to: '+e([a.street,a.barangay,a.city,a.province,a.region,a.postal,a.country].filter(Boolean).join(', ')):'Pick-up at Plant Habitat';
+  var cls=isNew(o)?'badge r':(o.status==='Cancelled'?'badge x':'badge');
+  return '<div class="o'+(isNew(o)?' new':'')+'">'+
+    '<div class="h"><b>'+e(o.code)+' <span class="'+cls+'">'+e(o.status)+'</span></b><small>'+new Date(o.created).toLocaleString()+'</small></div>'+
+    '<p><b>'+e(o.name)+'</b> · <a href="tel:'+e(o.phone)+'">'+e(o.phone)+'</a>'+(o.email?' · '+e(o.email):'')+'</p>'+
+    '<p>'+o.items.map(function(i){return e(i.name)+' × '+i.q}).join('<br>')+'</p>'+
+    '<p>Total: <b>'+money(o.total)+'</b> <small>(shipping '+money(o.fee)+')</small></p>'+
+    '<p>Payment: <b>'+({cod:'Cash on delivery / at pick-up',gcash:'GCash',bank:'Bank transfer'}[o.pay]||'Cash')+'</b> · '+(o.paid?'<span class="badge">PAID</span>':'<span class="badge x">Not paid yet</span>')+' <button type="button" data-paid="'+e(o.code)+'" data-v="'+(o.paid?0:1)+'">'+(o.paid?'Mark unpaid':'Mark as paid')+'</button>'+(o.zone?' · <small>Delivery zone: '+e(o.zone)+'</small>':'')+'</p>'+
+    '<p>'+addr+'</p>'+
+    (o.notes?'<p><small>Notes: '+e(o.notes)+'</small></p>':'')+
+    (o.review?'<p><small>Review: '+'★'.repeat(o.review.rating)+' '+e(o.review.text)+'</small></p>':'')+
+    (o.status==='Cancelled'?'<p><small>Cancelled by '+((o.history.filter(function(h){return h.s==='Cancelled'}).pop()||{}).by==='customer'?'the customer':'admin')+'. Stock was returned.'+(o.cancelReason?'<br><b>Reason:</b> '+e(o.cancelReason):'')+'</small></p>':'')+
+    '<label>Status: <select data-c="'+e(o.code)+'"'+(o.status==='Cancelled'?' disabled':'')+'>'+ALL.map(function(s){return '<option'+(s===o.status?' selected':'')+'>'+s+'</option>'}).join('')+'</select></label></div>';
+}
+
+function inqCard(q){
+  var c=e(q.contact),link=/@/.test(q.contact)?'<a href="mailto:'+c+'">'+c+'</a>':'<a href="tel:'+c+'">'+c+'</a>';
+  return '<div class="o'+(q.read?'':' new')+'"><div class="h"><b>'+e(q.name)+' <span class="'+(q.read?'badge':'badge r')+'">'+(q.read?'Read':'New inquiry')+'</span></b><small>'+new Date(q.created).toLocaleString()+'</small></div>'+
+    '<p>'+link+'</p>'+(q.interest?'<p><small>Interested in:</small> <b>'+e(q.interest)+'</b></p>':'')+
+    (q.message?'<p style="white-space:pre-wrap">'+e(q.message)+'</p>':'')+
+    '<button class="ghost" data-read="'+e(q.id)+'" data-v="'+(q.read?'0':'1')+'">'+(q.read?'Mark as unread':'Mark as read')+'</button></div>';
+}
+
+function isOut(x){return x.available===false||(x.stock!=null&&x.stock<=0)}
+function pstate(x){
+  if(x.available===false)return '<span class="badge o">Out of stock</span>';
+  if(x.stock!=null&&x.stock<=0)return '<span class="badge o">Sold out (0 left)</span>';
+  return '<span class="badge">'+(x.stock==null?'In stock':x.stock+' in stock')+'</span>';
+}
+function prow(p,v){
+  var x=v||p;
+  return '<div class="pr" data-p="'+e(p.id)+'"'+(v?' data-v="'+e(v.name)+'"':'')+'><span class="nm">'+e(v?v.name:p.name)+' '+pstate(x)+'</span>'+
+    '<label>Price ₱<input type="number" min="0" step="0.01" class="ip" value="'+(x.price==null?'':x.price)+'" placeholder="Ask"></label>'+
+    '<label>Stock<input type="number" min="0" step="1" class="is" value="'+(x.stock==null?'':x.stock)+'" placeholder="No limit"></label>'+
+    '<button data-save>Save</button>'+
+    (x.stock===0&&x.available!==false?'':'<button class="ghost" data-oos="'+(x.available===false?'1':'0')+'">'+(x.available===false?'Back in stock':'Mark out of stock')+'</button>')+
+    '<small class="err" data-msg></small></div>';
+}
+function pcard(p){
+  return '<div class="o"><div class="h"><b>'+e(p.emoji||'')+' '+e(p.name)+'</b><small>'+e(p.unit||'')+'</small></div>'+
+    (p.variants?p.variants.map(function(v){return prow(p,v)}).join(''):prow(p,null))+'</div>';
+}
+function loadProds(){return api('/api/admin/products').then(function(l){if(Array.isArray(l)){prods=l;if(tab==='prod')render()}})}
+function render(){
+  if(!T)return;
+  var n={new:0,active:0,done:0},nq=inq.filter(function(q){return !q.read}).length;
+  orders.forEach(function(o){if(isNew(o))n.new++;else if(DONE.indexOf(o.status)<0)n.active++;else n.done++});
+  TL.innerHTML='<button class="ghost" id="lo">Log out</button>';
+  document.getElementById('lo').onclick=logout;
+  var tabs=[['new','New ('+n.new+')'],['active','In progress ('+n.active+')'],['done','Finished ('+n.done+')'],['all','All ('+orders.length+')'],['inq','Inquiries ('+nq+')'],['prod','Products ('+prods.length+')']];
+  var list=tab==='inq'?inq:tab==='prod'?prods:orders.filter(inTab);
+  A.innerHTML='<div class="tabs">'+tabs.map(function(t){return '<button data-tab="'+t[0]+'" aria-pressed="'+(tab===t[0])+'">'+t[1]+'</button>'}).join('')+'</div>'+
+    (list.length?list.map(tab==='inq'?inqCard:tab==='prod'?pcard:card).join(''):'<p class="mut">'+(tab==='inq'?'No inquiries yet.':'No orders here.')+'</p>')+
+    (tab==='prod'?'<p><small>Stock goes down when a customer orders and comes back if the order is cancelled. Leave Stock empty for no limit. Leave Price empty to show "Ask for price".</small></p>':'<p><small>Updates automatically every 10 seconds.</small></p>');
+  document.title=(n.new+nq?'('+(n.new+nq)+') New · ':'')+baseTitle;
+}
+
+function load(){
+  Promise.all([api('/api/admin/orders'),api('/api/admin/inquiries')]).then(function(r){
+    var l=r[0],q=r[1];
+    if(!Array.isArray(l)||!Array.isArray(q))return;
+    var codes=l.map(function(o){return o.code}),ids=q.map(function(x){return x.id});
+    if((seen&&codes.some(function(c){return seen.indexOf(c)<0}))||(seenQ&&ids.some(function(i){return seenQ.indexOf(i)<0})))beep();
+    seen=codes;seenQ=ids;orders=l;inq=q;
+    if(!prods.length)loadProds();
+    if(tab==='prod'||(document.activeElement&&document.activeElement.tagName==='SELECT')){document.title=(orders.filter(isNew).length+inq.filter(function(q){return !q.read}).length?'('+(orders.filter(isNew).length+inq.filter(function(q){return !q.read}).length)+') New · ':'')+baseTitle;return}
+    render();
+  }).catch(function(x){
+    if(x===0)return;
+    if(T&&!orders.length)A.innerHTML='<p class="err">Cannot reach the server. Retrying…</p>';
+  });
+}
+
+A.onclick=function(ev){
+  var b=ev.target.closest('[data-tab]');
+  if(b){tab=b.getAttribute('data-tab');if(tab==='prod'){loadProds().then(render,render)}else render();return}
+  var row=ev.target.closest('.pr');
+  if(row&&(ev.target.closest('[data-save]')||ev.target.closest('[data-oos]'))){
+    var btn=ev.target.closest('button'),msg=row.querySelector('[data-msg]'),body={};
+    if(row.getAttribute('data-v')!=null)body.variant=row.getAttribute('data-v');
+    if(btn.hasAttribute('data-save')){body.price=row.querySelector('.ip').value;body.stock=row.querySelector('.is').value}
+    else body.available=btn.getAttribute('data-oos')==='1';
+    btn.disabled=true;msg.textContent='';
+    api('/api/admin/products/'+encodeURIComponent(row.getAttribute('data-p')),{method:'PATCH',body:JSON.stringify(body)}).then(function(r){
+      if(r&&r.error){btn.disabled=false;msg.textContent=r.error;return}
+      loadProds();
+    },function(){btn.disabled=false});
+    return;
+  }
+  var pd=ev.target.closest('[data-paid]');
+  if(pd){pd.disabled=true;api('/api/admin/orders/'+encodeURIComponent(pd.getAttribute('data-paid')),{method:'PATCH',body:JSON.stringify({paid:pd.getAttribute('data-v')==='1'})}).then(load,function(){pd.disabled=false});return}
+  var r=ev.target.closest('[data-read]');
+  if(r){r.disabled=true;api('/api/admin/inquiries/'+r.getAttribute('data-read'),{method:'PATCH',body:JSON.stringify({read:r.getAttribute('data-v')==='1'})}).then(load,function(){r.disabled=false})}
+};
+A.onchange=function(ev){
+  var c=ev.target.dataset&&ev.target.dataset.c;
+  if(!c)return;
+  ev.target.disabled=true;
+  api('/api/admin/orders/'+encodeURIComponent(c),{method:'PATCH',body:JSON.stringify({status:ev.target.value})})
+    .then(function(){ev.target.blur();load()},function(){ev.target.disabled=false});
+};
+
+if(T)load();else login();
+setInterval(function(){if(T)load()},10000);
+</script></body></html>
